@@ -34,7 +34,6 @@ from homeassistant.helpers.device_registry import async_get as async_device_regi
 from homeassistant.helpers.device_registry import DeviceRegistry
 from homeassistant.helpers.event import (
     async_call_later,
-    async_track_state_change,
     async_track_time_change,
     async_track_time_interval,
     async_track_state_change_event,
@@ -601,47 +600,23 @@ class EVSmartChargingCoordinator:
             if self.charging_state_entity_id:
                 tracked_entity_ids.append(self.charging_state_entity_id)
 
-        if MAJOR_VERSION <= 2023 or (MAJOR_VERSION == 2024 and MINOR_VERSION <= 5):
-            # Use for Home Assistant 2024.5 or older
-            self.listeners.append(
-                async_track_state_change(
-                    self.hass,
-                    tracked_entity_ids,
-                    self.update_sensors,
-                )
+        self.listeners.append(
+            async_track_state_change_event(
+                self.hass,
+                tracked_entity_ids,
+                self.update_sensors_new,
             )
-        else:
-            # Use for Home Assistant 2024.6 or newer
+        )
+        if len(self.ev_target_soc_entity_id) > 0:
             self.listeners.append(
                 async_track_state_change_event(
                     self.hass,
-                    tracked_entity_ids,
+                    [
+                        self.ev_target_soc_entity_id,
+                    ],
                     self.update_sensors_new,
                 )
             )
-        if len(self.ev_target_soc_entity_id) > 0:
-            if MAJOR_VERSION <= 2023 or (MAJOR_VERSION == 2024 and MINOR_VERSION <= 5):
-                # Use for Home Assistant 2024.5 or older
-                self.listeners.append(
-                    async_track_state_change(
-                        self.hass,
-                        [
-                            self.ev_target_soc_entity_id,
-                        ],
-                        self.update_sensors,
-                    )
-                )
-            else:
-                # Use for Home Assistant 2024.6 or newer
-                self.listeners.append(
-                    async_track_state_change_event(
-                        self.hass,
-                        [
-                            self.ev_target_soc_entity_id,
-                        ],
-                        self.update_sensors_new,
-                    )
-                )
         else:
             # Set default Target SOC when there is no sensor
             self.sensor.ev_target_soc = DEFAULT_TARGET_SOC

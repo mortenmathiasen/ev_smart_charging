@@ -71,10 +71,34 @@ async def test_soc_estimator_timestamp_after_soc():
     estimator.report(40.0, at(0), at(0))
     estimator.set_charging(True, at(0))
 
-    # New SOC with the old timestamp, then the new timestamp
+    # New SOC with the old timestamp is assumed to be reported now,
+    # not at the old timestamp with the charging since then added
     assert estimator.report(50.0, at(0), at(60))
+    assert estimator.reported_at == at(60)
+    assert estimator.get_soc(at(60), 10.0) == 50.0
+    # Then the new timestamp
     assert estimator.report(50.0, at(60), at(60))
     assert estimator.get_soc(at(90), 10.0) == 55.0
+
+
+async def test_soc_estimator_timestamp_corrected_after_soc():
+    """Test that the report time is corrected when the timestamp arrives later."""
+    estimator = SocEstimator()
+    estimator.report(20.0, at(0), at(0))
+    estimator.set_charging(True, at(0))
+
+    # SOC measured at 30 minutes is received at 60 minutes with the old timestamp
+    assert estimator.report(25.0, at(0), at(60))
+    estimator.set_charging(False, at(70))
+    assert estimator.get_soc(at(90), 10.0) == 26.7
+    # Unchanged SOC with the old timestamp is ignored
+    assert not estimator.report(25.0, at(0), at(80))
+
+    # The timestamp arrives and is earlier than the time the SOC was received.
+    # The charging before the SOC was received is kept and counted.
+    assert estimator.report(25.0, at(30), at(90))
+    assert estimator.reported_at == at(30)
+    assert estimator.get_soc(at(90), 10.0) == 31.7
 
 
 async def test_soc_estimator_invalid_timestamp():
@@ -100,9 +124,23 @@ async def test_soc_estimator_restore():
     restored.restore(data)
     assert restored.reported_soc == 40.0
     assert restored.reported_at == at(0)
+    assert restored.timestamp == at(0)
+    # The restored timestamp is used to detect a SOC without a new timestamp
+    assert restored.report(45.0, at(0), at(100))
+    assert restored.reported_at == at(100)
+    restored.restore(data)
     # Charging is ended when the state was saved
     assert not restored.is_charging()
     assert restored.get_soc(at(120), 10.0) == 50.0
+
+    # Data saved before the timestamp was stored
+    del data["timestamp"]
+    restored.restore(data)
+    assert restored.reported_at == at(0)
+    assert restored.timestamp is None
+    # The same report again is ignored, but its timestamp is registered
+    assert not restored.report(40.0, at(0), at(100))
+    assert restored.timestamp == at(0)
 
     # Invalid data is ignored
     restored.restore({"reported_soc": 40.0})

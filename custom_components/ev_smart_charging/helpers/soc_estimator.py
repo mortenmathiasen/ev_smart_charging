@@ -20,6 +20,8 @@ class SocEstimator:
     def __init__(self) -> None:
         self.reported_soc: float | None = None
         self.reported_at: datetime | None = None
+        # The last valid timestamp from the EV
+        self.timestamp: datetime | None = None
         # Charging periods as [start, stop]. stop is None while charging.
         self.charging_periods: list[list[datetime | None]] = []
 
@@ -46,13 +48,25 @@ class SocEstimator:
             if soc == self.reported_soc:
                 return False
             reported_at = time_now
-        if soc == self.reported_soc and (
-            self.reported_at is not None and reported_at <= self.reported_at
-        ):
-            return False
-        if soc != self.reported_soc and self.reported_at is not None:
-            # The timestamp is sometimes updated just after the SOC.
-            reported_at = max(reported_at, self.reported_at)
+        elif self.timestamp is not None and reported_at <= self.timestamp:
+            # The timestamp has not been updated since the last report.
+            if soc == self.reported_soc:
+                return False
+            # The SOC is sometimes updated before its timestamp. The SOC was
+            # measured at an unknown time, so assume it is reported now. When the
+            # timestamp is updated, the report time is corrected.
+            reported_at = time_now
+        else:
+            if (
+                self.timestamp is None
+                and soc == self.reported_soc
+                and self.reported_at is not None
+                and reported_at <= self.reported_at
+            ):
+                # The first timestamp after a restore without a stored timestamp
+                self.timestamp = reported_at
+                return False
+            self.timestamp = reported_at
         self.reported_soc = soc
         self.reported_at = reported_at
         self._remove_old_periods()
@@ -86,10 +100,15 @@ class SocEstimator:
 
     def _remove_old_periods(self) -> None:
         """Remove charging periods that ended before the last report"""
+        # Keep the periods after the last timestamp, since the report time is
+        # corrected to that timestamp if the timestamp is updated after the SOC.
+        cutoff = self.reported_at
+        if self.timestamp is not None:
+            cutoff = min(cutoff, self.timestamp)
         self.charging_periods = [
             period
             for period in self.charging_periods
-            if period[1] is None or period[1] > self.reported_at
+            if period[1] is None or period[1] > cutoff
         ]
 
     def as_dict(self, time_now: datetime) -> dict[str, Any]:
@@ -98,6 +117,9 @@ class SocEstimator:
             "reported_soc": self.reported_soc,
             "reported_at": (
                 self.reported_at.isoformat() if self.reported_at is not None else None
+            ),
+            "timestamp": (
+                self.timestamp.isoformat() if self.timestamp is not None else None
             ),
             "charging_periods": [
                 [start.isoformat(), stop.isoformat() if stop is not None else None]
@@ -114,6 +136,8 @@ class SocEstimator:
             self.reported_at = (
                 dt.parse_datetime(data["reported_at"]) if data["reported_at"] else None
             )
+            timestamp = data.get("timestamp")
+            self.timestamp = dt.parse_datetime(timestamp) if timestamp else None
             # Charging is unknown while Home Assistant is not running,
             # so end an ongoing charging when the state was saved.
             self.charging_periods = [

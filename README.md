@@ -72,7 +72,7 @@ EV SOC entity | Yes | Entity with the car's State-of-Charge. A value between 0 a
 EV target SOC entity | No | Entity with the target value for the State-of-Charge. A value between 0 and 100. If not provided, 100 is assumed.
 Charger control entity | No | If provided, the integration will directly control the charger by setting the state of this entity to 'on' or 'off'. This entity can either be a Switch or an Input Boolean.
 Charging state entity | No | If provided, will be used by the integration to check that the charger is charging. If the charger is not charging when it should, the integration will try to start the charging again. The entity shall have the state 'on' when the charger is charging, and may be e.g. a Switch or Input Boolean.
-EV SOC last reported entity | No | Timestamp sensor with the time the EV last reported its SOC. If provided, the integration calculates the SOC between reports from the EV, see [Calculated SOC](#calculated-soc).
+EV SOC last reported entity | No | Timestamp sensor with the time the EV last reported its SOC. If provided, the integration calculates the SOC between reports from the EV, see [Calculated SOC](#calculated-soc). If the EV SOC entity has a `data_captured_at` attribute, that time is used first.
 Charging control by EV integration | Yes | Select this if an EV integration (and not a charger integration) will be used to control start/stop of charging. Also, if an EV integration is used to control start/stop of charging, it is highly recommended to create an automation that controls `switch.ev_smart_charging_ev_connected`.
 
 With the exception of Name, the above configuration items can be changed after intial configuration in Settings -> Devices & Services -> Integrations -> EV Smart Charging -> 1 device -> Configure. To change Name, the native way to rename Integrations or Devices in Home Assistant can be used.
@@ -293,6 +293,8 @@ For example, if the SOC entity is set 60, the Target SOC entity is set to 100 (o
 Many EVs only report their SOC now and then, for example when the car wakes up. If the time of the last report is available, e.g. a "last reported" sensor from the EV integration, it can be configured as `EV SOC last reported entity`. The integration then calculates the SOC as the last reported SOC plus the charging done since that report:
 
 calculated SOC = reported SOC + hours of charging since the report x `Charging speed`
+
+If the `EV SOC entity` has a `data_captured_at` attribute with the time the SOC was measured (for example from vag_connect), that time is used first, since a "last reported" sensor can show the time of a later report that still carries an older SOC. The `EV SOC last reported entity` is used when the attribute is missing or cannot be read as a time. A time without time zone is taken as local time.
 
 The calculated SOC is capped at the EV Target SOC and is used instead of the reported SOC everywhere in the integration. It is also available as `sensor.ev_smart_charging_calculated_soc`, with the attributes `reported_soc`, `reported_at` and `charging_hours`.
 

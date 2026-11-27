@@ -289,21 +289,40 @@ class EVSmartChargingCoordinator:
             return state_obj is not None and state_obj.state == STATE_ON
         return self.sensor is not None and self.sensor.native_value == STATE_ON
 
-    def get_calculated_soc(self, reported_soc: float) -> float:
+    @staticmethod
+    def parse_report_time(value) -> datetime | None:
+        """Return a report time as a datetime, or None if it cannot be parsed.
+
+        A time without time zone is in local time.
+        """
+        if isinstance(value, datetime):
+            report_time = value
+        elif isinstance(value, str):
+            try:
+                report_time = dt.parse_datetime(value)
+            except ValueError:
+                return None
+        else:
+            return None
+        if report_time is not None and report_time.tzinfo is None:
+            report_time = report_time.replace(tzinfo=dt.DEFAULT_TIME_ZONE)
+        return report_time
+
+    def get_calculated_soc(self, ev_soc_state: State) -> float:
         """Return the reported SOC plus the charging done since it was reported"""
         time_now = dt.now()
         self.soc_estimator.set_charging(self.is_actually_charging(), time_now)
 
-        reported_at = None
-        timestamp_state = self.hass.states.get(self.ev_soc_timestamp_entity_id)
-        if timestamp_state is not None:
-            try:
-                reported_at = dt.parse_datetime(timestamp_state.state)
-            except ValueError:
-                reported_at = None
-            if reported_at is not None and reported_at.tzinfo is None:
-                reported_at = reported_at.replace(tzinfo=dt.DEFAULT_TIME_ZONE)
-        self.soc_estimator.report(reported_soc, reported_at, time_now)
+        # Prefer the time the SOC was captured, e.g. from vag_connect,
+        # since the timestamp entity can be the time of a later dataset.
+        reported_at = self.parse_report_time(
+            ev_soc_state.attributes.get("data_captured_at")
+        )
+        if reported_at is None:
+            timestamp_state = self.hass.states.get(self.ev_soc_timestamp_entity_id)
+            if timestamp_state is not None:
+                reported_at = self.parse_report_time(timestamp_state.state)
+        self.soc_estimator.report(float(ev_soc_state.state), reported_at, time_now)
 
         calculated_soc = self.soc_estimator.get_soc(
             time_now, self.charging_pct_per_hour, self.ev_target_soc
@@ -994,7 +1013,7 @@ class EVSmartChargingCoordinator:
 
         if self.ev_soc_valid:
             if self.soc_estimator is not None:
-                self.ev_soc = self.get_calculated_soc(float(ev_soc_state.state))
+                self.ev_soc = self.get_calculated_soc(ev_soc_state)
                 self.sensor.ev_soc = self.ev_soc
             # To handle non-live SOC
             if self.ev_soc != self.ev_soc_previous:

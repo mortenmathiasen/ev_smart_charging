@@ -101,6 +101,37 @@ async def test_soc_estimator_timestamp_corrected_after_soc():
     assert estimator.get_soc(at(90), 10.0) == 31.7
 
 
+async def test_soc_estimator_captured_earlier_delivered_late():
+    """Test a SOC with a capture time before the last report time."""
+    estimator = SocEstimator()
+    # 0 = 23:42, 78 = 01:00, 108 = 01:30, 155 = 02:17
+    estimator.set_charging(True, at(78))
+    # A SOC reported with the time of a later dataset
+    assert estimator.report(35.0, at(108), at(108))
+
+    # A new SOC captured at 23:42 is delivered at 02:17. It includes no
+    # charging, so all charging since 23:42 is added.
+    assert estimator.report(38.0, at(0), at(155))
+    assert estimator.reported_at == at(0)
+    assert estimator.get_soc(at(155), 10.0) == 50.8
+
+
+async def test_soc_estimator_same_soc_earlier_capture_time():
+    """Test that an earlier capture time for the same SOC corrects the report time."""
+    estimator = SocEstimator()
+    estimator.set_charging(True, at(78))
+    # The SOC was taken as measured at the time of a later dataset
+    assert estimator.report(38.0, at(200), at(200))
+    assert estimator.get_soc(at(230), 10.0) == 43.0
+
+    # The capture time of the SOC becomes known
+    assert estimator.report(38.0, at(0), at(230))
+    assert estimator.reported_at == at(0)
+    assert estimator.get_soc(at(230), 10.0) == 63.3
+    # The same capture time again is not a new report
+    assert not estimator.report(38.0, at(0), at(240))
+
+
 async def test_soc_estimator_invalid_timestamp():
     """Test that a missing or future timestamp is replaced by the current time."""
     estimator = SocEstimator()

@@ -12,11 +12,14 @@ except ImportError:
         mock_restore_cache_with_extra_data,
     )
 
+from datetime import datetime
+
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant, State
 from homeassistant.const import STATE_OFF, STATE_ON, MAJOR_VERSION, MINOR_VERSION
 from homeassistant.helpers.entity_registry import async_get as async_entity_registry_get
 from homeassistant.helpers.entity_registry import EntityRegistry
+from homeassistant.util import dt
 
 from custom_components.ev_smart_charging import async_setup_entry, async_unload_entry
 from custom_components.ev_smart_charging.const import DOMAIN
@@ -222,6 +225,133 @@ async def test_coordinator_no_calculated_soc(
     freezer.move_to("2022-09-30T11:00:00+02:00")
     await coordinator.update_sensors()
     assert coordinator.ev_soc == 40.0
+
+    assert await async_unload_entry(hass, config_entry)
+    await hass.async_block_till_done()
+
+
+SOC = "sensor.volkswagen_we_connect_id_state_of_charge"
+
+
+async def test_coordinator_calculated_soc_data_captured_at(
+    hass: HomeAssistant, skip_service_calls, set_cet_timezone, freezer
+):
+    """Test that the data_captured_at attribute of the SOC sensor is preferred."""
+
+    freezer.move_to("2022-09-30T10:00:00+02:00")
+
+    entity_registry: EntityRegistry = async_entity_registry_get(hass)
+    MockSOCEntity.create(hass, entity_registry, "40")
+    hass.states.async_set(
+        SOC,
+        "40",
+        {"data_captured_at": "2022-09-30T09:00:00+02:00", "freshness_source": "point"},
+    )
+    MockTargetSOCEntity.create(hass, entity_registry, "80")
+    MockPriceEntity.create(hass, entity_registry, 123)
+    MockPriceEntity.set_state(hass, PRICE_20220930, None)
+    MockChargerEntity.create(hass, entity_registry, STATE_OFF)
+    hass.states.async_set(CHARGING_STATE, STATE_OFF)
+    hass.states.async_set(LAST_REPORTED, "2022-09-30T09:30:00+02:00")
+
+    config_entry, _ = await setup_coordinator(hass, MOCK_CONFIG_CALCULATED_SOC)
+    state = hass.states.get(CALCULATED_SOC)
+    assert state.attributes["reported_at"] == "2022-09-30T09:00:00+02:00"
+
+    # Without the attribute, the timestamp entity is used
+    hass.states.async_set(SOC, "41", {"freshness_source": "dataset"})
+    hass.states.async_set(LAST_REPORTED, "2022-09-30T09:40:00+02:00")
+    await hass.async_block_till_done()
+    state = hass.states.get(CALCULATED_SOC)
+    assert state.state == "41.0"
+    assert state.attributes["reported_at"] == "2022-09-30T09:40:00+02:00"
+
+    # An attribute that cannot be parsed is ignored
+    hass.states.async_set(SOC, "42", {"data_captured_at": "not a time"})
+    hass.states.async_set(LAST_REPORTED, "2022-09-30T09:50:00+02:00")
+    await hass.async_block_till_done()
+    state = hass.states.get(CALCULATED_SOC)
+    assert state.state == "42.0"
+    assert state.attributes["reported_at"] == "2022-09-30T09:50:00+02:00"
+
+    # An attribute without time zone is in local time
+    hass.states.async_set(SOC, "43", {"data_captured_at": "2022-09-30T09:55:00"})
+    await hass.async_block_till_done()
+    state = hass.states.get(CALCULATED_SOC)
+    assert state.state == "43.0"
+    assert state.attributes["reported_at"] == "2022-09-30T09:55:00+02:00"
+
+    # An attribute that is a datetime object
+    captured_at = datetime(2022, 9, 30, 7, 58, tzinfo=dt.UTC)
+    hass.states.async_set(SOC, "44", {"data_captured_at": captured_at})
+    await hass.async_block_till_done()
+    state = hass.states.get(CALCULATED_SOC)
+    assert state.state == "44.0"
+    assert state.attributes["reported_at"] == "2022-09-30T07:58:00+00:00"
+
+    assert await async_unload_entry(hass, config_entry)
+    await hass.async_block_till_done()
+
+
+async def test_coordinator_calculated_soc_stale_soc_in_new_dataset(
+    hass: HomeAssistant, skip_service_calls, set_cet_timezone, freezer
+):
+    """Test new datasets that carry an old SOC with its capture time.
+
+    Replays a night with a VW via vag_connect. The timestamp entity moves with
+    every dataset while the SOC and its capture time stay the same.
+    """
+
+    freezer.move_to("2022-09-29T23:50:00+00:00")
+
+    entity_registry: EntityRegistry = async_entity_registry_get(hass)
+    MockSOCEntity.create(hass, entity_registry, "38")
+    hass.states.async_set(
+        SOC,
+        "38",
+        {"data_captured_at": "2022-09-29T23:42:27+00:00", "freshness_source": "point"},
+    )
+    MockTargetSOCEntity.create(hass, entity_registry, "80")
+    MockPriceEntity.create(hass, entity_registry, 123)
+    MockPriceEntity.set_state(hass, PRICE_20220930, None)
+    MockChargerEntity.create(hass, entity_registry, STATE_OFF)
+    hass.states.async_set(CHARGING_STATE, STATE_OFF)
+    hass.states.async_set(LAST_REPORTED, "2022-09-29T23:45:00+00:00")
+
+    config_entry, coordinator = await setup_coordinator(
+        hass, MOCK_CONFIG_CALCULATED_SOC
+    )
+    coordinator.charging_pct_per_hour = 14.3
+    assert coordinator.ev_soc == 38.0
+
+    async def set_charging(time: str, state: str):
+        freezer.move_to(time)
+        hass.states.async_set(CHARGING_STATE, state)
+        await hass.async_block_till_done()
+
+    async def new_dataset(time: str):
+        freezer.move_to(time)
+        hass.states.async_set(LAST_REPORTED, time)
+        await hass.async_block_till_done()
+
+    await set_charging("2022-09-30T01:00:00+00:00", STATE_ON)
+    await set_charging("2022-09-30T02:00:00+00:00", STATE_OFF)
+    await set_charging("2022-09-30T02:17:00+00:00", STATE_ON)
+    await new_dataset("2022-09-30T02:18:26+00:00")
+    # 1 h 1 min 26 s of charging since the SOC was captured
+    assert coordinator.ev_soc == 52.6
+    await new_dataset("2022-09-30T03:20:03+00:00")
+    await set_charging("2022-09-30T04:29:00+00:00", STATE_OFF)
+
+    freezer.move_to("2022-09-30T04:56:00+00:00")
+    await coordinator.update_sensors()
+    await hass.async_block_till_done()
+    # 38 + 3.2 h * 14.3 %/h is capped at the Target SOC
+    assert coordinator.ev_soc == 80.0
+    state = hass.states.get(CALCULATED_SOC)
+    assert state.state == "80.0"
+    assert state.attributes["reported_soc"] == 38.0
+    assert state.attributes["reported_at"] == "2022-09-29T23:42:27+00:00"
 
     assert await async_unload_entry(hass, config_entry)
     await hass.async_block_till_done()

@@ -48,8 +48,10 @@ class SocEstimator:
             if soc == self.reported_soc:
                 return False
             reported_at = time_now
-        elif self.timestamp is not None and reported_at <= self.timestamp:
+        elif self.timestamp is not None and reported_at == self.timestamp:
             # The timestamp has not been updated since the last report.
+            # An earlier timestamp is handled below as the time the SOC was
+            # captured, e.g. a capture time that replaces a dataset time.
             if soc == self.reported_soc:
                 return False
             # The SOC is sometimes updated before its timestamp. The SOC was
